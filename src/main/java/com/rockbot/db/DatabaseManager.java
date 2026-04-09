@@ -61,10 +61,12 @@ public class DatabaseManager {
             """);
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS instrumentals (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    song_id     INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
-                    file_id     TEXT NOT NULL,
-                    uploaded_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    song_id         INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
+                    instrument_name TEXT NOT NULL,
+                    file_id         TEXT NOT NULL,
+                    uploaded_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                    UNIQUE(song_id, instrument_name)
                 )
             """);
             stmt.execute("""
@@ -260,6 +262,35 @@ public class DatabaseManager {
         } catch (SQLException e) { log.error("setSetting key={}", key, e); }
     }
 
+    public static String getSetting(String key, String defaultValue) {
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement ps = conn.prepareStatement(
+                 "SELECT value FROM settings WHERE key = ?")) {
+            ps.setString(1, key);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getString(1);
+            }
+        } catch (Exception e) { log.error("getSetting key={}", key, e); }
+        return defaultValue;
+    }
+
+    /** Получает информацию о группе */
+    public static String getBandInfo() {
+        return getSetting("band_info", "");
+    }
+
+    /** Устанавливает информацию о группе (заменяет полностью) */
+    public static void setBandInfo(String info) {
+        setSetting("band_info", info);
+    }
+
+    /** Добавляет текст к существующей информации о группе */
+    public static void addBandInfo(String additionalInfo) {
+        String current = getBandInfo();
+        String newInfo = current.isBlank() ? additionalInfo : current + "\n\n" + additionalInfo;
+        setBandInfo(newInfo);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // УЧАСТНИКИ ГРУППЫ
     // ═══════════════════════════════════════════════════════════════════════
@@ -303,6 +334,20 @@ public class DatabaseManager {
                 rs.getString("added_at")});
         } catch (SQLException e) { log.error("getAllMembers", e); }
         return result;
+    }
+
+    /** Возвращает user_id по username (без @) или null если не найден */
+    public static Long getUserIdByUsername(String username) {
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement ps = conn.prepareStatement(
+                 "SELECT user_id FROM band_members WHERE username LIKE ?")) {
+            // Ищем username в формате "Имя Фамилия (@username)" или просто содержащий username
+            ps.setString(1, "%(@" + username + ")%");
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getLong("user_id");
+            }
+        } catch (SQLException e) { log.error("getUserIdByUsername", e); }
+        return null;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -354,7 +399,7 @@ public class DatabaseManager {
             String newBlockUntil = blockUntil;
             int    newBlockDays  = blockDays;
 
-            if (reqToday >= 3) {
+            if (reqToday > 3) {
                 // Блокируем на blockDays дней
                 newBlockUntil = java.time.LocalDateTime.now()
                         .plusDays(blockDays)
@@ -719,24 +764,51 @@ public class DatabaseManager {
         } catch (SQLException e) { log.error("getChordInstrument", e); return ""; }
     }
 
-    public static void saveInstrumental(long songId, String fileId) {
-        try (Connection conn = DriverManager.getConnection(DB_URL)) {
-            try (PreparedStatement d = conn.prepareStatement(
-                "DELETE FROM instrumentals WHERE song_id=?"))
-            { d.setLong(1, songId); d.executeUpdate(); }
-            try (PreparedStatement i = conn.prepareStatement(
-                "INSERT INTO instrumentals (song_id, file_id) VALUES (?,?)"))
-            { i.setLong(1, songId); i.setString(2, fileId); i.executeUpdate(); }
+    public static void saveInstrumental(long songId, String instrumentName, String fileId) {
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement ps = conn.prepareStatement(
+                 "INSERT OR REPLACE INTO instrumentals (song_id, instrument_name, file_id) VALUES (?,?,?)")) {
+            ps.setLong(1, songId);
+            ps.setString(2, instrumentName);
+            ps.setString(3, fileId);
+            ps.executeUpdate();
         } catch (SQLException e) { log.error("saveInstrumental", e); }
     }
 
-    public static String getInstrumentalFileId(long songId) {
+    public static String getInstrumentalFileId(long songId, String instrumentName) {
         try (Connection conn = DriverManager.getConnection(DB_URL);
              PreparedStatement ps = conn.prepareStatement(
-                "SELECT file_id FROM instrumentals WHERE song_id=?")) {
+                 "SELECT file_id FROM instrumentals WHERE song_id=? AND instrument_name=?")) {
             ps.setLong(1, songId);
+            ps.setString(2, instrumentName);
             try (ResultSet rs = ps.executeQuery()) { return rs.next() ? rs.getString(1) : null; }
         } catch (SQLException e) { log.error("getInstrumentalFileId", e); return null; }
+    }
+
+    /** Возвращает список инструменталов для песни: [[instrument_name, file_id], ...] */
+    public static List<String[]> getInstrumentals(long songId) {
+        List<String[]> result = new ArrayList<>();
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement ps = conn.prepareStatement(
+                 "SELECT instrument_name, file_id FROM instrumentals WHERE song_id=? ORDER BY instrument_name")) {
+            ps.setLong(1, songId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.add(new String[]{rs.getString("instrument_name"), rs.getString("file_id")});
+                }
+            }
+        } catch (SQLException e) { log.error("getInstrumentals", e); }
+        return result;
+    }
+
+    /** Проверяет есть ли хотя бы один инструментал для песни */
+    public static boolean hasInstrumentals(long songId) {
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement ps = conn.prepareStatement(
+                 "SELECT 1 FROM instrumentals WHERE song_id=? LIMIT 1")) {
+            ps.setLong(1, songId);
+            try (ResultSet rs = ps.executeQuery()) { return rs.next(); }
+        } catch (SQLException e) { log.error("hasInstrumentals", e); return false; }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1210,7 +1282,7 @@ public class DatabaseManager {
         List<String[]> results = new ArrayList<>();
         java.io.File dir = new java.io.File(dirPath);
         if (!dir.exists() || !dir.isDirectory()) {
-            results.add(new String[]{"—", "❌ Директория не найдена: " + dirPath}); return results;
+            results.add(new String[]{"—", "❌ Директория не найдена: "}); return results;
         }
         java.util.Set<String> exts = java.util.Set.of(".mp3",".ogg",".m4a",".wav",".flac",".aac",".opus");
         java.io.File[] files = dir.listFiles();

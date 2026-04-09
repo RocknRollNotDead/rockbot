@@ -17,7 +17,20 @@ import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
  *  2. Инициализируем SQLite — создаём rockbot.db и все таблицы
  *  3. Регистрируем бота в Telegram
  */
+/*
+
+    прислать BotFather этот текст:
+
+        start - запустить бота
+        help - справка по командам
+        bandinfo - инфо о нас
+        search - поиск песен
+        allsongs - показать все песни
+        concerts - показать ближайшие выступления
+
+*/
 public class Main {
+
 
     private static final Logger log = LoggerFactory.getLogger(Main.class);
 
@@ -34,7 +47,7 @@ public class Main {
         log.info("Запуск бота «{}» как @{}", BotConfig.BAND_NAME, BotConfig.USERNAME);
 
         // Создаём rockbot.db и все таблицы если не существуют
-//        DatabaseManager.initializeDatabase();
+        DatabaseManager.initializeDatabase();
 
         log.info("База данных готова.");
 

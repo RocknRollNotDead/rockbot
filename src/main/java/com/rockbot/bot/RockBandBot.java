@@ -6,6 +6,7 @@ import com.rockbot.db.DatabaseManager;
 import com.rockbot.handler.CallbackHandler;
 import com.rockbot.handler.MessageHandler;
 import com.rockbot.util.BotConfig;
+import com.rockbot.util.Role;
 import com.rockbot.util.UserSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -154,9 +155,10 @@ public class RockBandBot extends TelegramLongPollingBot {
             audio.setAudio(new InputFile(fileId));
             audio.setCaption(caption);
             execute(audio);
-            // Аудиофайл — тоже новое сообщение, nav «уходит вверх»
-            UserSession.incMsgsSinceNav(userId);
-            UserSession.markNavStale(userId);
+            // Аудиофайл — новое сообщение, но НЕ инкрементируем счётчик
+            // чтобы не пересылать nav после одного аудио
+            // UserSession.incMsgsSinceNav(userId);
+            // UserSession.markNavStale(userId);
         } catch (Exception e) { log.error("sendAudioMsg chatId={}", chatId, e); }
     }
 
@@ -359,8 +361,25 @@ public class RockBandBot extends TelegramLongPollingBot {
     }
 
     public void resendNav(long chatId, long userId, String text, InlineKeyboardMarkup kbd) {
-        // Передаём только название группы — нейтральный текст без "Выберите раздел"
-        stripNavKeyboard(chatId, userId, "\uD83D\uDE08 " + BotConfig.BAND_NAME + " \uD83D\uDE08");
+        // Получаем статус пользователя
+        Role role = BotConfig.getRole(userId);
+        String roleName = switch (role) { 
+            case ADMIN -> "👑 Администратор"; 
+            case MEMBER -> "\uD83E\uDE95 Участник"; 
+            case LISTENER -> "🎧 Слушатель"; 
+        };
+        
+        // Определяем, является ли новый экран главным меню
+        boolean isHomeScreen = text.contains("Добро пожаловать в бот группы");
+        
+        if (isHomeScreen) {
+            // Для главного меню - редактируем старое сообщение на статус
+            stripNavKeyboard(chatId, userId, "Ваш статус: " + roleName);
+        } else {
+            // Для остальных экранов - просто убираем кнопки
+            stripNavKeyboard(chatId, userId, null);
+        }
+        
         int newMsgId = sendWithKeyboard(chatId, text, kbd);
         if (newMsgId > 0) {
             UserSession.setNavMessageId(userId, newMsgId);

@@ -54,8 +54,6 @@ public class CallbackHandler {
             case "noop"  -> { return; }
             // Подписка/отписка прямо из главного меню
             case "sub"   -> {
-                String uname = "user_" + userId;
-//                DatabaseManager.subscribe(userId, uname);
                 DatabaseManager.subscribe(userId, displayName);
                 bot.editNav(chatId, msgId,
                         "🔔 Вы подписались на уведомления!",
@@ -91,6 +89,12 @@ public class CallbackHandler {
             if (songId > 0) { nav.showSong(chatId, msgId, userId, songId); return; }
         }
 
+        // ── Возврат к песне без повторной отправки аудио: sback_<id> ─────
+        if (data.startsWith("sback_")) {
+            long songId = parseLong(data.substring(6));
+            if (songId > 0) { nav.showSong(chatId, msgId, userId, songId, false); return; }
+        }
+
         // ── Текст, аккорды, инструментал, история ────────────────────────
         if (data.startsWith("lyr_")) { nav.showLyrics(chatId, msgId, userId, parseLong(data.substring(4)));      return; }
         if (data.startsWith("cho_")) { nav.showChordsMenu(chatId, msgId, userId, parseLong(data.substring(4)));  return; }
@@ -101,6 +105,17 @@ public class CallbackHandler {
         }
         if (data.startsWith("ins_")) { nav.showInstrumental(chatId, msgId, userId, parseLong(data.substring(4))); return; }
         if (data.startsWith("his_")) { nav.showHistory(chatId, msgId, userId, parseLong(data.substring(4)));      return; }
+
+        // ── Выбор конкретного инструментала для отправки ──────────────────
+        if (data.startsWith("insp_")) {
+            String[] parts = data.substring(5).split("_", 2);
+            if (parts.length == 2) {
+                long songId = parseLong(parts[0]);
+                String instrumentName = parts[1];
+                nav.sendInstrumental(chatId, msgId, userId, songId, instrumentName);
+            }
+            return;
+        }
 
         // ── Меню редактирования ───────────────────────────────────────────
         if (data.startsWith("edt_")) { nav.showEditMenu(chatId, msgId, userId, parseLong(data.substring(4)));    return; }
@@ -115,8 +130,30 @@ public class CallbackHandler {
             return;
         }
         if (data.startsWith("ec_"))  { nav.showEditInput(chatId, msgId, userId, parseLong(data.substring(3)), UserSession.State.AWAIT_EDIT_CHORDS_INSTR, "Для какого *инструмента*? (гитара / бас / пианино / …)"); return; }
-        if (data.startsWith("ei_"))  { nav.showEditInput(chatId, msgId, userId, parseLong(data.substring(3)), UserSession.State.AWAIT_EDIT_INSTRUMENTAL, "Отправьте *аудиофайл инструментала*:"); return; }
+        if (data.startsWith("ei_"))  { nav.showInstrumentalInput(chatId, msgId, userId, parseLong(data.substring(3))); return; }
         if (data.startsWith("eh_"))  { nav.showEditInput(chatId, msgId, userId, parseLong(data.substring(3)), UserSession.State.AWAIT_EDIT_HISTORY,       "Напишите *историю создания*:"); return; }
+
+        // ── Выбор типа инструментала ──────────────────────────────────────
+        if (data.startsWith("instype_")) {
+            String[] parts = data.substring(8).split("_", 2);
+            if (parts.length == 2) {
+                long songId = parseLong(parts[0]);
+                String type = parts[1];
+                if (type.equals("custom")) {
+                    // Запрашиваем ввод названия инструмента
+                    UserSession.set(userId, "songId", String.valueOf(songId));
+                    UserSession.setState(userId, UserSession.State.AWAIT_EDIT_INSTRUMENTAL_NAME);
+                    bot.editNav(chatId, msgId, "🎼 *Добавить инструментал*\n\nВведите название инструмента:", Keyboards.backToEditMenu(songId));
+                } else {
+                    // Используем предустановленное название
+                    UserSession.set(userId, "songId", String.valueOf(songId));
+                    UserSession.set(userId, "instrumentName", type);
+                    UserSession.setState(userId, UserSession.State.AWAIT_EDIT_INSTRUMENTAL);
+                    bot.editNav(chatId, msgId, "🎼 *Добавить инструментал*\n\nОтправьте *аудиофайл* для «" + type + "»:", Keyboards.backToEditMenu(songId));
+                }
+            }
+            return;
+        }
 
         // ── Удаление песни ────────────────────────────────────────────────
         if (data.startsWith("del_") && !data.startsWith("delok_")) {
@@ -132,7 +169,7 @@ public class CallbackHandler {
 
         // ── Одобрить/отклонить запрос ─────────────────────────────────────
         if (data.startsWith("mrok_")) { handleApproveRequest(chatId, msgId, userId, parseLong(data.substring(5)), displayName); return; }
-        if (data.startsWith("mrno_")) { handleDenyRequest(chatId, msgId, userId, parseLong(data.substring(5)));    return; }
+        if (data.startsWith("mrno_")) { handleDenyRequest(chatId, msgId, userId, parseLong(data.substring(5)), displayName);    return; }
 
         // ── Участники: карточка, удаление ────────────────────────────────
         if (data.startsWith("mm_"))  { nav.showMemberCard(chatId, msgId, userId, parseLong(data.substring(3)));          return; }
@@ -175,6 +212,28 @@ public class CallbackHandler {
 
         // ── Голосование ───────────────────────────────────────────────────
         if (data.startsWith("vote_")) { handleVote(data, chatId, msgId, userId); return; }
+
+        // ── Репетиции: карточка, удаление ─────────────────────────────────
+        if (data.startsWith("rh_") && !data.startsWith("rhd_") && !data.startsWith("rhdo_")) {
+            nav.showRehearsal(chatId, msgId, userId, parseLong(data.substring(3)));
+            return;
+        }
+        if (data.startsWith("rhd_")) {
+            if (!BotConfig.canEdit(userId)) { bot.editNav(chatId, msgId, "🔒", Keyboards.backToHome()); return; }
+            long rhId = parseLong(data.substring(4));
+            String[] r = DatabaseManager.getRehearsal(rhId);
+            if (r == null) { nav.showRehearsals(chatId, msgId, userId); return; }
+            bot.editNav(chatId, msgId,
+                    "🗑 Удалить репетицию?\n\n🗓 " + r[1] + (r[2].isBlank() ? "" : "\n" + r[2]),
+                    Keyboards.rehearsalDeleteConfirm(rhId));
+            return;
+        }
+        if (data.startsWith("rhdo_")) {
+            if (!BotConfig.canEdit(userId)) { bot.editNav(chatId, msgId, "🔒", Keyboards.backToHome()); return; }
+            DatabaseManager.deleteRehearsal(parseLong(data.substring(5)));
+            nav.showRehearsals(chatId, msgId, userId);
+            return;
+        }
 
         // В методе route():
 
@@ -234,7 +293,7 @@ public class CallbackHandler {
                 // Запускаем диалог концерта в nav
                 UserSession.setState(userId, UserSession.State.AWAIT_EVENT_DATE);
                 bot.editNav(chatId, msgId,
-                        "📅 *Добавление концерта*\n\n🗓 Дата и время (в любом формате):\nНапример: «15 сентября 2025, 20:00»",
+                        "📅 *Добавление концерта*\n\n🗓 Дата и время:\n",
                         Keyboards.inputCancel("ev"));
             }
             case "rehearsal" -> {
@@ -372,20 +431,23 @@ public class CallbackHandler {
         long   targetId = Long.parseLong(req[1]);
         String username = req[2];
 
-        DatabaseManager.addMember(targetId, displayName, adminId);
+
+
+        DatabaseManager.addMember(targetId, username, adminId);
         DatabaseManager.approveMemberRequest(reqId);
 
         // Редактируем САМО сообщение с кнопками — убираем кнопки, меняем текст
         bot.editMessage(chatId, msgId,
-                "✅ Принято\n\nПользователь " + displayName +/* username + */" добавлен как участник группы.\n" +
-                        "(принято администратором " + adminId + ")");
+                "✅ Принято\n\nПользователь " + username + " добавлен как участник группы.\n" +
+                        "(принято администратором " + displayName + ")");
+        //displayName - имя админа
 
         // Уведомляем пользователя
         bot.sendText(targetId,
                 "🎉 Ваш запрос принят!\n\nВы теперь участник группы " + BotConfig.BAND_NAME + ".\nНажмите /start.");
     }
 
-    private void handleDenyRequest(long chatId, int msgId, long adminId, long reqId) {
+    private void handleDenyRequest(long chatId, int msgId, long adminId, long reqId, String displayName) {
         if (!BotConfig.isAdmin(adminId)) {
             bot.removeKeyboard(chatId, msgId);
             return;
@@ -413,7 +475,7 @@ public class CallbackHandler {
         // Редактируем сообщение с кнопками — убираем кнопки
         bot.editMessage(chatId, msgId,
                 "❌ Отклонено\n\nЗапрос " + username + " отклонён.\n" +
-                        "(отклонено администратором " + adminId + ")");
+                        "(отклонено администратором " + displayName + ")");
 
         bot.sendText(targetId,
                 "ℹ️ Ваш запрос отклонён. Если считаете ошибкой — напишите через /feedback.");

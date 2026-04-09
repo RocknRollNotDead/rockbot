@@ -191,7 +191,7 @@ public class Keyboards {
             row(btn("📄 Текст песни",   "el_"  + songId), btn("🎸 Аккорды",      "ec_"  + songId)),
             row(btn("📖 История",       "eh_"  + songId)),
             row(btn("🗑 Удалить",       "del_" + songId)),
-            row(btn("🔙 К песне",       "s_"   + songId))
+            row(btn("🔙 Назад",         "s_"   + songId))
         ));
     }
 
@@ -213,6 +213,40 @@ public class Keyboards {
         if (!row.isEmpty()) rows.add(row);
         rows.add(row(btn("🔙 К песне", "s_" + songId)));
         return markup(rows);
+    }
+
+    /** Список инструменталов для выбора: [[instrument_name, file_id], ...] */
+    public static InlineKeyboardMarkup instrumentalList(long songId, List<String[]> instrumentals) {
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+        
+        // Сначала добавляем "полная минусовка" если есть
+        boolean hasMinusovka = false;
+        for (String[] instr : instrumentals) {
+            if (instr[0].equalsIgnoreCase("полная минусовка")) {
+                rows.add(row(btn("🎼 " + instr[0], "insp_" + songId + "_" + instr[0])));
+                hasMinusovka = true;
+                break;
+            }
+        }
+        
+        // Затем остальные инструменты
+        for (String[] instr : instrumentals) {
+            if (!instr[0].equalsIgnoreCase("полная минусовка")) {
+                rows.add(row(btn("🎸 " + instr[0], "insp_" + songId + "_" + instr[0])));
+            }
+        }
+        
+        rows.add(row(btn("🔙 К песне", "s_" + songId)));
+        return markup(rows);
+    }
+
+    /** Выбор типа инструментала при добавлении */
+    public static InlineKeyboardMarkup instrumentalTypeSelect(long songId) {
+        return markup(List.of(
+            row(btn("🎼 Полная минусовка", "instype_" + songId + "_полная минусовка")),
+            row(btn("✏️ Ввести название инструмента", "instype_" + songId + "_custom")),
+            row(btn("🔙 Назад", "edt_" + songId))
+        ));
     }
 
     // ── Концерты ─────────────────────────────────────────────────────────
@@ -294,8 +328,13 @@ public class Keyboards {
     // ── Кнопки «Назад» ────────────────────────────────────────────────────
 
     public static InlineKeyboardMarkup backToSong(long songId) {
-        return markup(List.of(row(btn("🔙 К песне", "s_" + songId))));
+        return markup(List.of(row(btn("🔙 К песне", "sback_" + songId))));
     }
+    
+    public static InlineKeyboardMarkup backToEditMenu(long songId) {
+        return markup(List.of(row(btn("🔙 Назад", "edt_" + songId))));
+    }
+    
     public static InlineKeyboardMarkup backToHome() {
         return markup(List.of(row(btn("🔙 Главное меню", "h"))));
     }

@@ -151,18 +151,22 @@ public class NavigationHandler {
     // ════════════════════════════════════════════════════════════════════════
 
     public void showSong(long chatId, int msgId, long userId, long songId) {
+        showSong(chatId, msgId, userId, songId, true);
+    }
+
+    public void showSong(long chatId, int msgId, long userId, long songId, boolean sendAudio) {
         String[] song = DatabaseManager.getSong(songId);
         if (song == null) { showHome(chatId, msgId, userId); return; }
         boolean hasLyrics  = DatabaseManager.getLyrics(songId) != null;
         boolean hasChords  = !DatabaseManager.getChordsList(songId).isEmpty();
-        boolean hasInstr   = DatabaseManager.getInstrumentalFileId(songId) != null;
+        boolean hasInstr   = DatabaseManager.hasInstrumentals(songId);
         boolean hasHistory = !song[3].isBlank();
         boolean canEdit    = BotConfig.canEdit(userId);
         int     backPage   = UserSession.getLastSongsPage(userId);
         String navText = buildSongText(song);
         InlineKeyboardMarkup navKbd = Keyboards.songDetail(
                 songId, hasLyrics, hasChords, hasInstr, hasHistory, canEdit, backPage);
-        if (!song[4].isBlank()) {
+        if (!song[4].isBlank() && sendAudio) {
             bot.editNav(chatId, navId(userId, msgId), navText, navKbd);
             bot.sendAudioMsg(chatId, userId, song[4], "🎵 " + song[1]);
             smartNav(chatId, userId, navId(userId, msgId), navText, navKbd);
@@ -219,13 +223,55 @@ public class NavigationHandler {
     }
 
     public void showInstrumental(long chatId, int msgId, long userId, long songId) {
-        String fileId = DatabaseManager.getInstrumentalFileId(songId);
+        List<String[]> instrumentals = DatabaseManager.getInstrumentals(songId);
         String[] song = DatabaseManager.getSong(songId);
         String title  = song != null ? song[1] : "#" + songId;
-        if (fileId == null) { smartNav(chatId, userId, msgId, "🎼 Инструментал не загружен.", Keyboards.backToSong(songId)); return; }
-        bot.editNav(chatId, navId(userId, msgId), "🎼 *" + esc(title) + "* — инструментал\n\n_Отправляется…_", Keyboards.backToSong(songId));
-        bot.sendAudioMsg(chatId, userId, fileId, "🎼 " + title + " (инструментал)");
-        smartNav(chatId, userId, navId(userId, msgId), "🎼 *" + esc(title) + "* — инструментал\n\n_Отправлено_ ✅", Keyboards.backToSong(songId));
+        
+        if (instrumentals.isEmpty()) { 
+            smartNav(chatId, userId, msgId, "🎼 Инструменталы не загружены.", Keyboards.backToSong(songId)); 
+            return; 
+        }
+        
+        // Если только один инструментал - сразу отправляем
+        if (instrumentals.size() == 1) {
+            String instrumentName = instrumentals.get(0)[0];
+            String fileId = instrumentals.get(0)[1];
+            bot.editNav(chatId, navId(userId, msgId), "🎼 *" + esc(title) + "* — " + esc(instrumentName) + "\n\n_Отправляется…_", Keyboards.backToSong(songId));
+            bot.sendAudioMsg(chatId, userId, fileId, "🎼 " + title + " (" + instrumentName + ")");
+            smartNav(chatId, userId, navId(userId, msgId), "🎼 *" + esc(title) + "* — " + esc(instrumentName) + "\n\n_Отправлено_ ✅", Keyboards.backToSong(songId));
+            return;
+        }
+        
+        // Если несколько - показываем меню выбора
+        smartNav(chatId, userId, msgId, "🎼 *Инструменталы «" + esc(title) + "»*\n\nВыберите инструмент:", 
+                Keyboards.instrumentalList(songId, instrumentals));
+    }
+
+    /** Отправляет конкретный инструментал */
+    public void sendInstrumental(long chatId, int msgId, long userId, long songId, String instrumentName) {
+        String fileId = DatabaseManager.getInstrumentalFileId(songId, instrumentName);
+        String[] song = DatabaseManager.getSong(songId);
+        String title = song != null ? song[1] : "#" + songId;
+        
+        if (fileId == null) {
+            smartNav(chatId, userId, msgId, "❌ Инструментал не найден.", Keyboards.backToSong(songId));
+            return;
+        }
+        
+        bot.editNav(chatId, navId(userId, msgId), "🎼 *" + esc(title) + "* — " + esc(instrumentName) + "\n\n_Отправляется…_", Keyboards.backToSong(songId));
+        bot.sendAudioMsg(chatId, userId, fileId, "🎼 " + title + " (" + instrumentName + ")");
+        smartNav(chatId, userId, navId(userId, msgId), "🎼 *" + esc(title) + "* — " + esc(instrumentName) + "\n\n_Отправлено_ ✅", Keyboards.backToSong(songId));
+    }
+
+    /** Показывает меню выбора инструмента для добавления инструментала */
+    public void showInstrumentalInput(long chatId, int msgId, long userId, long songId) {
+        if (!BotConfig.canEdit(userId)) { 
+            smartNav(chatId, userId, msgId, "🔒 Только для участников.", Keyboards.backToEditMenu(songId)); 
+            return; 
+        }
+        smartNav(chatId, userId, msgId, 
+                "🎼 *Добавить инструментал*\n\nВыберите тип или введите название инструмента:", 
+                Keyboards.instrumentalTypeSelect(songId));
     }
 
     public void showHistory(long chatId, int msgId, long userId, long songId) {
@@ -288,13 +334,7 @@ public class NavigationHandler {
         if (rh.isEmpty()) {
             smartNav(chatId, userId, msgId, "🎸 *Репетиции*\n\nПредстоящих репетиций нет.", Keyboards.rehearsalList(canAdd)); return;
         }
-        StringBuilder t = new StringBuilder("🎸 *Репетиции*\n\n");
-        for (String[] r : rh) {
-            t.append("🔸 🗓 *").append(esc(r[1])).append("*\n");
-            if (!r[2].isBlank()) t.append(esc(r[2])).append("\n");
-            t.append("\n");
-        }
-        smartNav(chatId, userId, msgId, fitText(t.toString(), MAX_LEN), Keyboards.rehearsalList(canAdd));
+        smartNav(chatId, userId, msgId, "🎸 *Репетиции*\n\nВыберите репетицию:", Keyboards.rehearsalListWithButtons(rh, canAdd));
     }
     // NavigationHandler.java
     public void showRehearsal(long chatId, int msgId, long userId, long rhId) {

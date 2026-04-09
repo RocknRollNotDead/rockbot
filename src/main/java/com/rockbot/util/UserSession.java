@@ -24,7 +24,7 @@ public class UserSession {
         // Редактирование песни
         AWAIT_EDIT_TITLE, AWAIT_EDIT_ALBUM, AWAIT_EDIT_AUDIO,
         AWAIT_EDIT_LYRICS, AWAIT_EDIT_CHORDS_INSTR, AWAIT_EDIT_CHORDS_TEXT,
-        AWAIT_EDIT_INSTRUMENTAL, AWAIT_EDIT_HISTORY,
+        AWAIT_EDIT_INSTRUMENTAL, AWAIT_EDIT_INSTRUMENTAL_NAME, AWAIT_EDIT_HISTORY,
 
         // Поиск
         AWAIT_SEARCH,
@@ -53,6 +53,9 @@ public class UserSession {
 
         // Смена получателя запросов
         AWAIT_SET_RECIPIENT_ID,
+
+        // Информация о группе
+        AWAIT_SET_BAND_INFO, AWAIT_ADD_BAND_INFO,
     }
 
     private static final Map<Long, Integer>          navIds       = new HashMap<>();

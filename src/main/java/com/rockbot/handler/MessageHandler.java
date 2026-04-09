@@ -68,6 +68,17 @@ public class MessageHandler {
     // ════════════════════════════════════════════════════════════════════════
 
     private void handleCommand(String cmd, String fullText, long chatId, long userId, String username) throws Exception {
+        // Обработка /cancel для состояний
+        if (cmd.equals("/cancel")) {
+            State currentState = UserSession.getState(userId);
+            if (currentState == State.AWAIT_SET_BAND_INFO || currentState == State.AWAIT_ADD_BAND_INFO) {
+                UserSession.clearState(userId);
+                bot.sendText(chatId, "❌ Действие отменено.");
+                return;
+            }
+            // Для других состояний продолжаем обычную обработку
+        }
+        
         switch (cmd) {
 
             // ── Все пользователи ──────────────────────────────────────────
@@ -87,6 +98,9 @@ public class MessageHandler {
 
             // /feedback — только слушатели
             case "/feedback"     -> cmdFeedback(chatId, userId);
+
+            // /bandinfo — для всех пользователей
+            case "/bandinfo"     -> cmdBandInfo(chatId, userId);
 
             // /subscribe — только если не подписан
             case "/subscribe" -> {
@@ -110,6 +124,8 @@ public class MessageHandler {
             case "/inbox"        -> guardMember(userId, chatId, () -> cmdInbox(chatId, userId));
             case "/createpoll"   -> guardMember(userId, chatId, () -> cmdCreatePoll(chatId, userId));
             case "/stats"        -> guardMember(userId, chatId, () -> bot.sendText(chatId, DatabaseManager.getDatabaseStats()));
+            case "/togglefeedbacknotify" -> guardMember(userId, chatId, () -> cmdToggleFeedbackNotify(chatId));
+
 
             // ── Только администратор ───────────────────────────────────────
             case "/members"      -> guardAdmin(userId, chatId, () -> nav.showMemberList(chatId, ensureNav(chatId, userId), userId));
@@ -117,8 +133,9 @@ public class MessageHandler {
             case "/unblock"      -> guardAdmin(userId, chatId, () -> nav.showBlockedList(chatId, ensureNav(chatId, userId), userId));
             case "/setrecipient" -> guardAdmin(userId, chatId, () -> cmdSetRecipient(chatId, userId, fullText));
             case "/updateimport" -> guardAdmin(userId, chatId, () -> cmdUpdateImport(chatId, userId));
+            case "/setbandinfo"  -> guardAdmin(userId, chatId, () -> cmdSetBandInfo(chatId, userId));
+            case "/addbandinfo"  -> guardAdmin(userId, chatId, () -> cmdAddBandInfo(chatId, userId));
             // В handleCommand():
-            case "/togglefeedbacknotify" -> guardAdmin(userId, chatId, () -> cmdToggleFeedbackNotify(chatId));
 
             default -> bot.sendText(chatId, "❓ Неизвестная команда. Напишите /help.");
         }
@@ -213,16 +230,23 @@ public class MessageHandler {
                 long id = pLong(UserSession.get(userId, "songId"));
                 DatabaseManager.updateSongHistory(id, text); UserSession.clearState(userId); nav.showEditMenu(chatId, navMsg, userId, id);
             }
+            case AWAIT_EDIT_INSTRUMENTAL_NAME -> {
+                // Сохраняем название инструмента и запрашиваем файл
+                UserSession.set(userId, "instrumentName", text);
+                UserSession.setState(userId, State.AWAIT_EDIT_INSTRUMENTAL);
+                long id = pLong(UserSession.get(userId, "songId"));
+                bot.editNav(chatId, navMsg, "🎼 *Добавить инструментал*\n\nОтправьте *аудиофайл* для «" + NavigationHandler.esc(text) + "»:", Keyboards.backToEditMenu(id));
+            }
 
             // ── Обратная связь (только слушатели) ────────────────────────
             /*case AWAIT_FEEDBACK -> {
-                DatabaseManager.saveFeedback(userId, "user_" + userId, text);
+                DatabaseManager.saveFeedback(userId, displayName, text);
                 UserSession.clearState(userId);
                 bot.editNav(chatId, navMsg, "💌 *Спасибо!* Ваше сообщение отправлено группе. 🤘", Keyboards.backToHome());
             }*/
             case AWAIT_FEEDBACK -> {
                 // Сохраняем фидбек в базу
-                DatabaseManager.saveFeedback(userId, "user_" + userId, text);
+                DatabaseManager.saveFeedback(userId, displayName, text);
                 UserSession.clearState(userId);
                 bot.editNav(chatId, navMsg, "💌 Спасибо! Ваше сообщение отправлено группе. 🤘",
                         Keyboards.backToHome());
@@ -241,14 +265,14 @@ public class MessageHandler {
             // ── Запрос на участие ─────────────────────────────────────────
             case AWAIT_MEMBER_REQUEST_MSG -> {
                 // Проверяем антиспам перед сохранением запроса
-                String spamBlock = DatabaseManager.checkRequestSpam(userId, "user_" + userId);
+                String spamBlock = DatabaseManager.checkRequestSpam(userId, displayName);
                 if (spamBlock != null) {
                     UserSession.clearState(userId);
                     bot.editNav(chatId, navMsg, spamBlock, Keyboards.backToHome());
                     return;
                 }
                 String message = text.equalsIgnoreCase("пропустить") ? "" : text;
-                long reqId = DatabaseManager.upsertMemberRequest(userId, "user_" + userId, message);
+                long reqId = DatabaseManager.upsertMemberRequest(userId, displayName, message);
                 UserSession.clearState(userId);
                 if (reqId < 0) { bot.editNav(chatId, navMsg, "❌ Не удалось отправить запрос.", Keyboards.backToHome()); return; }
                 bot.editNav(chatId, navMsg, "📨 *Запрос отправлен!*\n\nАдминистраторы рассмотрят его.", Keyboards.backToHome());
@@ -261,7 +285,6 @@ public class MessageHandler {
                     // Вместо "user_" + userId:
                     String adminMsg = "📨 Новый запрос на участие\n\n" +
                             "Пользователь: " + displayName + "\n" +
-                            "ID: " + userId + "\n" +
                             (message.isBlank() ? "Без пояснения" : "Сообщение: " + message);
                     bot.sendNotification(recipient, adminMsg, Keyboards.memberRequestActions(reqId));
                 }
@@ -331,11 +354,36 @@ public class MessageHandler {
 
             // ── Смена получателя запросов ─────────────────────────────────
             case AWAIT_SET_RECIPIENT_ID -> {
-                long targetId = pLong(text);
-                if (targetId < 0) { bot.sendText(chatId, "❌ Неверный ID."); UserSession.clearState(userId); return; }
+                String username = text.trim();
+                // Убираем @ если есть
+                if (username.startsWith("@")) {
+                    username = username.substring(1);
+                }
+                
+                // Ищем пользователя по username в band_members
+                Long targetId = DatabaseManager.getUserIdByUsername(username);
+                if (targetId == null || targetId < 0) {
+                    bot.sendText(chatId, "❌ Пользователь с username @" + username + " не найден среди участников группы.");
+                    UserSession.clearState(userId);
+                    return;
+                }
+                
                 DatabaseManager.setSetting("request_recipient_id", String.valueOf(targetId));
                 UserSession.clearState(userId);
-                bot.sendText(chatId, "✅ Получатель запросов изменён. ID: `" + targetId + "`");
+                bot.sendText(chatId, "✅ Получатель запросов изменён на @" + username);
+            }
+
+            // ── Информация о группе ───────────────────────────────────────
+            case AWAIT_SET_BAND_INFO -> {
+                DatabaseManager.setBandInfo(text);
+                UserSession.clearState(userId);
+                bot.sendText(chatId, "✅ Информация о группе установлена.");
+            }
+
+            case AWAIT_ADD_BAND_INFO -> {
+                DatabaseManager.addBandInfo(text);
+                UserSession.clearState(userId);
+                bot.sendText(chatId, "✅ Информация добавлена к существующей.");
             }
 
             default -> { /* текст вне диалога — игнорируем */ }
@@ -369,8 +417,12 @@ public class MessageHandler {
                 UserSession.clearState(userId); nav.showEditMenu(chatId, navMsg, userId, id);
             }
             case AWAIT_EDIT_INSTRUMENTAL -> {
-                long id = pLong(UserSession.get(userId, "songId")); DatabaseManager.saveInstrumental(id, fileId);
-                UserSession.clearState(userId); nav.showEditMenu(chatId, navMsg, userId, id);
+                long id = pLong(UserSession.get(userId, "songId"));
+                String instrumentName = UserSession.get(userId, "instrumentName");
+                if (instrumentName == null || instrumentName.isBlank()) instrumentName = "инструментал";
+                DatabaseManager.saveInstrumental(id, instrumentName, fileId);
+                UserSession.clearState(userId); 
+                nav.showEditMenu(chatId, navMsg, userId, id);
             }
             default -> bot.sendText(chatId, "Аудиофайл получен, но не ожидался.\n/addsong — добавить песню.");
         }
@@ -384,11 +436,9 @@ public class MessageHandler {
         Role role = BotConfig.getRole(userId);
         String roleName = switch (role) { case ADMIN -> "👑 Администратор"; case MEMBER -> "\uD83E\uDE95 Участник"; case LISTENER -> "🎧 Слушатель"; };
         String text = "\uD83D\uDE08 Добро пожаловать в бот группы *" + NavigationHandler.esc(BotConfig.BAND_NAME) + "* \uD83D\uDE08" + "\n\nВаш статус: " + roleName + "\n\nВыберите раздел:";
-        String text2 = "\uD83D\uDE08 Добро пожаловать в бот группы *" + NavigationHandler.esc(BotConfig.BAND_NAME) + "* \uD83D\uDE08" + "\n\nВаш статус: " + roleName;
 
         boolean isStaff = role != Role.LISTENER; boolean isListener = role == Role.LISTENER;
-        bot.stripNavKeyboard(chatId, userId, "\uD83D\uDE08 Добро пожаловать в бот группы\n*"
-                + BotConfig.BAND_NAME + "*\uD83D\uDE08" + "\n\nВаш статус: " + roleName);
+        bot.stripNavKeyboard(chatId, userId, "Ваш статус: " + roleName);
         UserSession.resetMsgsSinceNav(userId); UserSession.clearNavStale(userId);
         int msgId = bot.sendWithKeyboard(chatId, text,
                 Keyboards.home(isStaff, isListener, DatabaseManager.hasAlbums(), DatabaseManager.isSubscribed(userId)));
@@ -416,13 +466,13 @@ public class MessageHandler {
         boolean isAdmin    = role == Role.ADMIN;
         boolean isSub      = DatabaseManager.isSubscribed(userId);
         boolean hasAlbums  = DatabaseManager.hasAlbums();
-        System.out.println(hasAlbums);
+//        System.out.println(hasAlbums);
         // В cmdHelp(), в секцию для участников:
         int unread = DatabaseManager.getUnreadFeedbackCount(userId);
         String inboxLine = "/inbox — отзывы слушателей" +
                 (unread > 0 ? " 📩 *(" + unread + " непрочит.)*" : "") + "\n";
 
-        String text = "*Навигация*\n/start — главное меню\n/allsongs — все песни\n/search — поиск песен\n/concerts — концерты\n" +
+        String text = "*Навигация*\n/start — главное меню\n/bandinfo — вся информация о группе " + BotConfig.BAND_NAME + "\n/allsongs — все песни\n/search — поиск песен\n/concerts — концерты\n" +
                 (hasAlbums/* || isStaff */? "/albums — альбомы\n" : "") +
                 "\n*Уведомления*\n" +
                 (!isSub ? "/subscribe — подписаться\n" : "") +
@@ -440,9 +490,10 @@ public class MessageHandler {
                         """ + inboxLine +
                         """
                         /stats — статистика
+                        /togglefeedbacknotify — вкл/выкл автоуведомления о фидбеке
                         """ : "") +
 //                         "/addsong\n/addalbum\n/addevent\n/addrehearsal\n/rehearsals\n/addnews\n/createpoll\n/inbox\n/stats\n" : "") +
-                (isAdmin ? "\n*Администрирование*\n/members — участники группы\n/requests — запросы на участие\n/unblock — заблокированные пользователи\n/setrecipient — кто получает уведомления о запросах\n/togglefeedbacknotify — вкл/выкл автоуведомления о фидбеке\n/updateimport — импорт песен из директории\n" : "");
+                (isAdmin ? "\n*Администрирование*\n/members — участники группы\n/requests — запросы на участие\n/unblock — заблокированные пользователи\n/setrecipient — кто получает уведомления о запросах\n/setbandinfo — установить информацию о группе\n/addbandinfo — добавляет текст к существующей информации о группе\n/updateimport — импорт песен из директории\n" : "");
         bot.sendText(chatId, text);
     }
 
@@ -526,8 +577,7 @@ public class MessageHandler {
         for (String[] r : pending) {
             // Текст без Markdown — sendNotification использует plain text
             String msg = "📨 Запрос на участие\n\n" +
-                    "Пользователь: " + r[2] +
-                    "\nID: " + r[1] + "\n" +
+                    "Пользователь: " + r[2] + "\n" +
                     (r[3].isBlank() ? "Без пояснения" : "Сообщение: " + r[3]);
             bot.sendNotification(chatId, msg, Keyboards.memberRequestActions(Long.parseLong(r[0])));
         }
@@ -536,20 +586,31 @@ public class MessageHandler {
 
 
     /**
-     * /setrecipient <userId> — меняет получателя уведомлений о запросах.
-     * Если userId не указан — запрашивает его.
+     * /setrecipient <username> — меняет получателя уведомлений о запросах.
+     * Если username не указан — запрашивает его.
      */
     private void cmdSetRecipient(long chatId, long userId, String fullText) {
         String[] parts = fullText.split("\\s+", 2);
         if (parts.length < 2 || parts[1].isBlank()) {
             UserSession.setState(userId, State.AWAIT_SET_RECIPIENT_ID);
-            bot.sendText(chatId, "👤 Введите Telegram ID пользователя, который будет получать запросы на участие:");
+            bot.sendText(chatId, "👤 Введите username администратора (например, @username или username), который будет получать запросы на участие:");
             return;
         }
-        long targetId = pLong(parts[1]);
-        if (targetId < 0) { bot.sendText(chatId, "❌ Неверный ID."); return; }
+        String username = parts[1].trim();
+        // Убираем @ если есть
+        if (username.startsWith("@")) {
+            username = username.substring(1);
+        }
+        
+        // Ищем пользователя по username в band_members
+        Long targetId = DatabaseManager.getUserIdByUsername(username);
+        if (targetId == null || targetId < 0) {
+            bot.sendText(chatId, "❌ Пользователь с username @" + username + " не найден среди участников группы.");
+            return;
+        }
+        
         DatabaseManager.setSetting("request_recipient_id", String.valueOf(targetId));
-        bot.sendText(chatId, "✅ Получатель запросов изменён. ID: `" + targetId + "`");
+        bot.sendText(chatId, "✅ Получатель запросов изменён на @" + username);
     }
 
     /**
@@ -561,7 +622,7 @@ public class MessageHandler {
             bot.sendText(chatId, "❌ IMPORT_DIR не задана в файле .env.\n\nДобавьте строку:\nIMPORT_DIR=/путь/к/папке/с/музыкой");
             return;
         }
-        bot.sendText(chatId, "🔍 Сканирую: `" + dirPath + "`…");
+        bot.sendText(chatId, "🔍 Сканирую: `"/* + dirPath*/ + "`…");
         List<String[]> results = DatabaseManager.importSongsFromDirectory(dirPath, userId);
         StringBuilder sb = new StringBuilder("📂 *Результат импорта*\n\n");
         for (String[] r : results) sb.append(r[1]).append("\n");
@@ -580,6 +641,28 @@ public class MessageHandler {
         bot.sendText(chatId,
                 "💌 Автоматические уведомления о фидбеке: " +
                         (next ? "✅ ВКЛЮЧЕНЫ" : "❌ ВЫКЛЮЧЕНЫ"));
+    }
+
+    /** /bandinfo — показывает информацию о группе */
+    private void cmdBandInfo(long chatId, long userId) {
+        String info = DatabaseManager.getBandInfo();
+        if (info.isBlank()) {
+            bot.sendText(chatId, "ℹ️ Информация о группе пока не добавлена.");
+        } else {
+            sendLong(chatId, "ℹ️ *Информация о группе*\n\n" + info);
+        }
+    }
+
+    /** /setbandinfo — устанавливает информацию о группе (заменяет полностью) */
+    private void cmdSetBandInfo(long chatId, long userId) {
+        UserSession.setState(userId, State.AWAIT_SET_BAND_INFO);
+        bot.sendText(chatId, "ℹ️ *Установить информацию о группе*\n\nОтправьте текст, который заменит текущую информацию о группе.\n\nДля отмены напишите /cancel");
+    }
+
+    /** /addbandinfo — добавляет текст к существующей информации о группе */
+    private void cmdAddBandInfo(long chatId, long userId) {
+        UserSession.setState(userId, State.AWAIT_ADD_BAND_INFO);
+        bot.sendText(chatId, "ℹ️ *Добавить информацию о группе*\n\nОтправьте текст, который будет добавлен к существующей информации.\n\nДля отмены напишите /cancel");
     }
 
     // ════════════════════════════════════════════════════════════════════════
