@@ -55,3 +55,7 @@
 /addbandinfo — добавляет текст к существующей информации о группе
 
 /updateimport — импорт песен из директории
+
+Нейросетка также навайбкодила мне инструкцию как сделать так, чтобы этот бот заработал у вас для вашей группы https://github.com/RocknRollNotDead/rockbot/blob/master/README_DEPLOY.md.
+
+
