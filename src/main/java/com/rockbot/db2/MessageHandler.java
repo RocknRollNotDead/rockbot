@@ -385,7 +385,7 @@ public class MessageHandler {
         String roleName = switch (role) { case ADMIN -> "👑 Администратор"; case MEMBER -> "🎸 Участник"; case LISTENER -> "🎧 Слушатель"; };
         String text = "🎸 " + BotConfig.BAND_NAME + "\n\nВаш статус: " + roleName + "\n\nВыберите раздел:";
         boolean isStaff = role != Role.LISTENER; boolean isListener = role == Role.LISTENER;
-        bot.stripNavKeyboard(chatId, userId);
+        bot.stripNavKeyboard(chatId, userId, null);
         UserSession.resetMsgsSinceNav(userId); UserSession.clearNavStale(userId);
         int msgId = bot.sendWithKeyboard(chatId, text,
                 Keyboards.home(isStaff, isListener, DatabaseManager.hasAlbums(), DatabaseManager.isSubscribed(userId)));
